@@ -29,7 +29,7 @@ def black_scholes_price(S, K, T, r, sigma, option_type="call"):
 
 # 2. ROBUST LIVE DATA INGESTION & FEATURE ENGINEERING
 @st.cache_data(ttl=1800)
-def get_institutional_market_data(ticker):
+def get_historical_market_data(ticker):
     stock = yf.Ticker(ticker)
     df = stock.history(period="6mo", interval="1d")
     
@@ -62,7 +62,7 @@ def compute_gqpe_probability(row, prev_row):
 # 4. OPTIMIZED INSTITUTIONAL BACKTESTING SIMULATOR
 def run_institutional_simulation(df, ticker, kelly_fraction=0.15, risk_free_rate=0.045):
     if df is None or len(df) < 2:
-        raise ValueError(f"Insufficient historical data retrieved for ticker: {ticker}. Please check if the symbol is valid.")
+        raise ValueError(f"Insufficient historical data retrieved for ticker: {ticker}.")
 
     capital = 10000.00
     log = []
@@ -134,7 +134,7 @@ def run_institutional_simulation(df, ticker, kelly_fraction=0.15, risk_free_rate
         
     return pd.DataFrame(log)
 
-# Execution Pipeline Integration
+# 5. EXECUTION PIPELINE INTEGRATION
 try:
     if not user_ticker:
         st.warning("Please enter a valid stock ticker in the sidebar.")
@@ -149,7 +149,7 @@ try:
     latest_state = results_df.iloc[-1]
     net_roi = ((latest_state['Portfolio Equity ($)'] - 10000.0) / 10000.0) * 100
     
-    # 5. STREAMLIT VISUAL DASHBOARD PANEL
+    # STREAMLIT VISUAL DASHBOARD PANEL
     st.markdown(f"<h1 style='text-align: center; color: white;'>🏛️ GQPE Institutional Execution Desk</h1>", unsafe_allow_html=True)
     st.markdown(f"<p style='text-align: center; color: #9ca3af;'>Black-Scholes Filtered Options Engine — Asset: <b>{user_ticker}</b></p>", unsafe_allow_html=True)
     st.divider()
