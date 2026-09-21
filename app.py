@@ -30,7 +30,7 @@ def get_historical_market_data(tickers=["MSFT", "NVDA", "AAPL"]):
         low_cp = np.abs(df['Low'] - df['Close'].shift())
         df['ATR_20'] = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1).rolling(20).mean()
         
-        combined_data[ticker] = df.dropna().tail(21)
+        combined_data[ticker] = df.dropna().tail(30)
     return combined_data
 
 # 2. BALANCED INTRADAY PROBABILITY ENGINE (BIDIRECTIONAL ENABLED)
@@ -41,45 +41,45 @@ def compute_gqpe_probability(row, prev_row):
     z = (price_vs_ema * 10.0) + (momentum_factor * 15.0)
     return 1.0 / (1.0 + np.exp(-z))
 
-# 3. ROTATIONAL MULTI-STOCK SIMULATOR (WITH SAFETY GUARDS)
+# 3. ROBUST ROTATIONAL MULTI-STOCK SIMULATOR (UNION-BASED ALIGNMENT)
 def run_rotational_simulation(market_data_dict, kelly_fraction=0.50):
     tickers = list(market_data_dict.keys())
     if not tickers:
         raise ValueError("No market data retrieved for any ticker.")
         
-    common_dates = market_data_dict[tickers[0]].index
-    for t in tickers[1:]:
-        common_dates = common_dates.intersection(market_data_dict[t].index)
+    # جمع كافة التواريخ المتاحة وتوحيدها وترتيبها تصاعدياً لتجنب فراغ السجل
+    all_dates = set()
+    for t in tickers:
+        all_dates.update(market_data_dict[t].index)
+    sorted_dates = sorted(list(all_dates))
     
-    if len(common_dates) < 2:
-        raise ValueError("Insufficient overlapping dates found across tickers.")
+    if len(sorted_dates) < 2:
+        raise ValueError("Insufficient historical dates found.")
 
     capital = 1000.00
     log = []
     
-    for i in range(1, len(common_dates)):
-        current_date = common_dates[i]
-        prev_date = common_dates[i-1]
+    for i in range(1, len(sorted_dates)):
+        current_date = sorted_dates[i]
+        prev_date = sorted_dates[i-1]
         
         best_ticker = None
         best_p_y = -1
         best_row = None
-        best_prev_row = None
         
+        # البحث عن أفضل سهم متاح في هذا التاريخ المحدد
         for ticker in tickers:
             df = market_data_dict[ticker]
-            if current_date not in df.index or prev_date not in df.index:
-                continue
-            current_row = df.loc[current_date]
-            prev_row = df.loc[prev_date]
-            p_y = compute_gqpe_probability(current_row, prev_row)
-            
-            if abs(p_y - 0.5) > abs(best_p_y - 0.5):
-                best_p_y = p_y
-                best_ticker = ticker
-                best_row = current_row
-                best_prev_row = prev_row
+            if current_date in df.index and prev_date in df.index:
+                current_row = df.loc[current_date]
+                prev_row = df.loc[prev_date]
+                p_y = compute_gqpe_probability(current_row, prev_row)
                 
+                if abs(p_y - 0.5) > abs(best_p_y - 0.5):
+                    best_p_y = p_y
+                    best_ticker = ticker
+                    best_row = current_row
+                    
         if best_ticker is None or best_row is None:
             continue
                 
@@ -109,7 +109,7 @@ def run_rotational_simulation(market_data_dict, kelly_fraction=0.50):
         })
         
     if not log:
-        raise ValueError("Simulation log is empty. Check data pipelines.")
+        raise ValueError("Simulation log is empty after union processing.")
         
     return pd.DataFrame(log)
 
