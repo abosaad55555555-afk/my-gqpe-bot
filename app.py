@@ -5,7 +5,12 @@ import yfinance as yf
 from scipy.stats import norm
 
 # Configure Streamlit page architecture to dark wide layout
-st.set_page_config(page_title="GQPE Institutional Execution Desk - MSFT (Optimized)", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="GQPE Institutional Multi-Asset Execution Desk", layout="wide", initial_sidebar_state="expanded")
+
+# Sidebar Control Panel for Dynamic Ticker Input
+st.sidebar.markdown("## ⚙️ Execution Parameters")
+user_ticker = st.sidebar.text_input("Enter Stock Ticker", value="MSFT").upper().strip()
+kelly_fraction = st.sidebar.slider("Kelly Risk Fraction", min_value=0.05, max_value=0.50, value=0.15, step=0.05)
 
 # 1. QUANTITATIVE BLACK-SCHOLES PRICING ENGINE
 def black_scholes_price(S, K, T, r, sigma, option_type="call"):
@@ -24,7 +29,7 @@ def black_scholes_price(S, K, T, r, sigma, option_type="call"):
 
 # 2. ROBUST LIVE DATA INGESTION & FEATURE ENGINEERING
 @st.cache_data(ttl=1800)
-def get_institutional_market_data(ticker="MSFT"):
+def get_institutional_market_data(ticker):
     stock = yf.Ticker(ticker)
     df = stock.history(period="6mo", interval="1d")
     
@@ -55,9 +60,9 @@ def compute_gqpe_probability(row, prev_row):
     return 1.0 / (1.0 + np.exp(-z))
 
 # 4. OPTIMIZED INSTITUTIONAL BACKTESTING SIMULATOR
-def run_institutional_simulation(df, kelly_fraction=0.15, risk_free_rate=0.045):
+def run_institutional_simulation(df, ticker, kelly_fraction=0.15, risk_free_rate=0.045):
     if df is None or len(df) < 2:
-        raise ValueError("Insufficient historical data retrieved for execution.")
+        raise ValueError(f"Insufficient historical data retrieved for ticker: {ticker}. Please check if the symbol is valid.")
 
     capital = 10000.00
     log = []
@@ -72,11 +77,11 @@ def run_institutional_simulation(df, kelly_fraction=0.15, risk_free_rate=0.045):
         
         p_y = compute_gqpe_probability(current_row, prev_row)
         
-        # فلتر الأمان: عدم الدخول إلا إذا كانت الإشارة واضحة وليست في منطقة الحياد (0.45 إلى 0.55)
+        # فلتر الأمان للحد من التداول العشوائي
         if 0.46 <= p_y <= 0.54:
             log.append({
                 "Date": current_date.strftime('%Y-%m-%d'),
-                "Asset": "MSFT",
+                "Asset": ticker,
                 "Probability": round(p_y, 4),
                 "Action": "Hold / Cash (Filter Active)",
                 "Volatility": round(max(current_row['Volatility_20'], 0.10) * 100, 2),
@@ -90,14 +95,14 @@ def run_institutional_simulation(df, kelly_fraction=0.15, risk_free_rate=0.045):
         volatility = max(current_row['Volatility_20'], 0.10)
         
         strike_price = open_price 
-        time_to_expiry = 30.0 / 252.0  # تعديل إلى خيارات مدتها 30 يوماً لتقليل تسوس الوقت
+        time_to_expiry = 30.0 / 252.0  
         
         if p_y > 0.54:
-            action = "Buy Call (MSFT)"
+            action = f"Buy Call ({ticker})"
             opt_price_open = black_scholes_price(open_price, strike_price, time_to_expiry, risk_free_rate, volatility, "call")
             opt_price_close = black_scholes_price(close_price, strike_price, time_to_expiry - (1.0/252.0), risk_free_rate, volatility, "call")
         else:
-            action = "Buy Put (MSFT)"
+            action = f"Buy Put ({ticker})"
             opt_price_open = black_scholes_price(open_price, strike_price, time_to_expiry, risk_free_rate, volatility, "put")
             opt_price_close = black_scholes_price(close_price, strike_price, time_to_expiry - (1.0/252.0), risk_free_rate, volatility, "put")
             
@@ -105,7 +110,7 @@ def run_institutional_simulation(df, kelly_fraction=0.15, risk_free_rate=0.045):
             continue
             
         option_return = (opt_price_close - opt_price_open) / opt_price_open
-        friction_cost = 0.005  # تقليل الاحتكاك الافتراضي لخيارات بمدد أطول
+        friction_cost = 0.005  
         net_option_return = option_return - friction_cost
         
         allocated_capital = capital * kelly_fraction
@@ -116,7 +121,7 @@ def run_institutional_simulation(df, kelly_fraction=0.15, risk_free_rate=0.045):
         
         log.append({
             "Date": current_date.strftime('%Y-%m-%d'),
-            "Asset": "MSFT",
+            "Asset": ticker,
             "Probability": round(p_y, 4),
             "Action": action,
             "Volatility": round(volatility * 100, 2),
@@ -131,20 +136,28 @@ def run_institutional_simulation(df, kelly_fraction=0.15, risk_free_rate=0.045):
 
 # Execution Pipeline Integration
 try:
-    df_market = get_institutional_market_data("MSFT")
-    results_df = run_institutional_simulation(df_market)
+    if not user_ticker:
+        st.warning("Please enter a valid stock ticker in the sidebar.")
+        st.stop()
+        
+    df_market = get_historical_market_data(user_ticker)
+    if df_market.empty:
+        st.error(f"[-] No market data found for symbol: {user_ticker}. Please verify the ticker symbol.")
+        st.stop()
+        
+    results_df = run_institutional_simulation(df_market, user_ticker, kelly_fraction)
     latest_state = results_df.iloc[-1]
     net_roi = ((latest_state['Portfolio Equity ($)'] - 10000.0) / 10000.0) * 100
     
     # 5. STREAMLIT VISUAL DASHBOARD PANEL
-    st.markdown("<h1 style='text-align: center; color: white;'>🏛️ GQPE Institutional Execution Desk (Optimized)</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #9ca3af;'>Black-Scholes Filtered Multi-Day Options Engine — Microsoft (MSFT)</p>", unsafe_allow_html=True)
+    st.markdown(f"<h1 style='text-align: center; color: white;'>🏛️ GQPE Institutional Execution Desk</h1>", unsafe_allow_html=True)
+    st.markdown(f"<p style='text-align: center; color: #9ca3af;'>Black-Scholes Filtered Options Engine — Asset: <b>{user_ticker}</b></p>", unsafe_allow_html=True)
     st.divider()
     
     kpi1, kpi2, kpi3 = st.columns(3)
     kpi1.metric("Net Portfolio Equity", f"${latest_state['Portfolio Equity ($)']:,}")
     kpi2.metric("Initial Baseline Capital", "$10,000.00")
-    kpi3.metric("Strategy Alpha ROI", f"{net_roi:+.2f}%", "Filtered Delta Adjusted")
+    kpi3.metric("Strategy Alpha ROI", f"{net_roi:+.2f}%", f"Filtered Delta ({user_ticker})")
     
     st.divider()
     
@@ -156,18 +169,18 @@ try:
         st.info(f"⏳ LIVE SIGNAL: **{latest_state['Asset']}** | Execution: **{latest_state['Action']}** (Market in Neutral Zone)")
         
     m1, m2, m3 = st.columns(3)
-    m1.write(f"**Valuation Model:** Black-Scholes (30-Day Expiry Model)")
+    m1.write(f"**Valuation Model:** Black-Scholes (30-Day Expiry)")
     m2.write(f"**Dynamic Annualized Volatility:** {latest_state['Volatility']}%")
-    m3.write(f"**Execution Risk Profile:** Filtered Kelly Fraction (15%)")
+    m3.write(f"**Execution Risk Profile:** Kelly Fraction ({int(kelly_fraction*100)}%)")
     
     st.divider()
     
-    st.subheader("📈 Institutional Equity Growth Curve (Optimized)")
+    st.subheader(f"📈 Institutional Equity Growth Curve ({user_ticker})")
     st.line_chart(data=results_df, x="Date", y="Portfolio Equity ($)", use_container_width=True)
     
     st.divider()
     
-    st.subheader("📋 Execution & Pricing Audit Ledger")
+    st.subheader(f"📋 Execution & Pricing Audit Ledger ({user_ticker})")
     st.dataframe(results_df.iloc[::-1], use_container_width=True, hide_index=True)
 
 except Exception as e:
