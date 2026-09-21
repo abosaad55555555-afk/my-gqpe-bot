@@ -12,15 +12,14 @@ def get_historical_market_data(tickers=["MSFT", "NVDA", "AAPL"]):
     combined_data = {}
     for ticker in tickers:
         stock = yf.Ticker(ticker)
-        df = stock.history(period="3mo", interval="1d") # توسيع الفترة لضمان توفر بيانات كافية
+        df = stock.history(period="3mo", interval="1d")
         
         if df is None or df.empty:
             continue
             
-        # إزالة المنطقة الزمنية من الفهرس لتجنب مشاكل التطابق
-        if df.index.tz is not None:
-            df.index = df.index.tz_localize(None)
-            
+        # تنظيف وتحويل الفهرس إلى تواريخ صافية بدون أوقات أو مناطق زمنية
+        df.index = pd.to_datetime(df.index).normalize()
+        
         # Structural Filters
         df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
         delta = df['Close'].diff()
@@ -36,7 +35,7 @@ def get_historical_market_data(tickers=["MSFT", "NVDA", "AAPL"]):
         
         cleaned_df = df.dropna()
         if not cleaned_df.empty:
-            combined_data[ticker] = cleaned_df.tail(30)
+            combined_data[ticker] = cleaned_df.tail(40)
             
     return combined_data
 
@@ -114,7 +113,7 @@ def run_rotational_simulation(market_data_dict, kelly_fraction=0.50):
         })
         
     if not log:
-        raise ValueError("Simulation log is empty after union processing.")
+        raise ValueError("Simulation log is empty after normalization processing.")
         
     return pd.DataFrame(log)
 
