@@ -5,12 +5,13 @@ import yfinance as yf
 from scipy.stats import norm
 
 # Configure Streamlit page architecture to dark wide layout
-st.set_page_config(page_title="GQPE Institutional Multi-Asset Execution Desk", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="GQPE Institutional Execution Desk", layout="wide", initial_sidebar_state="expanded")
 
-# Sidebar Control Panel for Dynamic Ticker Input
+# Sidebar Control Panel
 st.sidebar.markdown("## ⚙️ Execution Parameters")
 user_ticker = st.sidebar.text_input("Enter Stock Ticker", value="MSFT").upper().strip()
 kelly_fraction = st.sidebar.slider("Kelly Risk Fraction", min_value=0.05, max_value=0.50, value=0.15, step=0.05)
+enable_optimizer = st.sidebar.checkbox("Enable Weight Optimization", value=True)
 
 # 1. QUANTITATIVE BLACK-SCHOLES PRICING ENGINE
 def black_scholes_price(S, K, T, r, sigma, option_type="call"):
@@ -51,19 +52,75 @@ def get_historical_market_data(ticker):
     cleaned_df = df.dropna()
     return cleaned_df.tail(60)
 
-# 3. STATISTICAL PROBABILITY ENGINE
-def compute_gqpe_probability(row, prev_row):
+# 3. PROBABILITY ENGINE WITH CONFIGURABLE WEIGHTS
+def compute_gqpe_probability(row, prev_row, w1, w2):
     price_vs_ema = (row['Close'] - row['EMA_20']) / (row['EMA_20'] + 1e-9)
     momentum_factor = (row['Close'] - prev_row['Close']) / (prev_row['Close'] + 1e-9)
     
-    z = (price_vs_ema * 8.0) + (momentum_factor * 12.0)
+    z = (price_vs_ema * w1) + (momentum_factor * w2)
     return 1.0 / (1.0 + np.exp(-z))
 
-# 4. OPTIMIZED INSTITUTIONAL BACKTESTING SIMULATOR
-def run_institutional_simulation(df, ticker, kelly_fraction=0.15, risk_free_rate=0.045):
-    if df is None or len(df) < 2:
-        raise ValueError(f"Insufficient historical data retrieved for ticker: {ticker}.")
+# Simulation Core (Helper for evaluation)
+def run_simulation_core(df, w1, w2, kelly_fraction, risk_free_rate=0.045):
+    capital = 10000.00
+    dates = df.index
+    
+    for i in range(1, len(dates)):
+        current_row = df.loc[dates[i]]
+        prev_row = df.loc[dates[i-1]]
+        
+        p_y = compute_gqpe_probability(current_row, prev_row, w1, w2)
+        
+        if 0.46 <= p_y <= 0.54:
+            continue
 
+        open_price = current_row['Open']
+        close_price = current_row['Close']
+        volatility = max(current_row['Volatility_20'], 0.10)
+        
+        strike_price = open_price 
+        time_to_expiry = 30.0 / 252.0  
+        
+        if p_y > 0.54:
+            opt_open = black_scholes_price(open_price, strike_price, time_to_expiry, risk_free_rate, volatility, "call")
+            opt_close = black_scholes_price(close_price, strike_price, time_to_expiry - (1.0/252.0), risk_free_rate, volatility, "call")
+        else:
+            opt_open = black_scholes_price(open_price, strike_price, time_to_expiry, risk_free_rate, volatility, "put")
+            opt_close = black_scholes_price(close_price, strike_price, time_to_expiry - (1.0/252.0), risk_free_rate, volatility, "put")
+            
+        if opt_open <= 0:
+            continue
+            
+        option_return = (opt_close - opt_open) / opt_open
+        net_return = option_return - 0.005  
+        
+        allocated = capital * kelly_fraction
+        cash = capital * (1.0 - kelly_fraction)
+        allocated *= (1.0 + net_return)
+        capital = cash + allocated
+        
+    return capital
+
+# 4. HISTORICAL GRID SEARCH OPTIMIZER
+@st.cache_data(ttl=3600)
+def optimize_strategy_weights(df, kelly_fraction):
+    best_equity = -1.0
+    best_w1, best_w2 = 8.0, 12.0
+    
+    w1_grid = np.linspace(2.0, 25.0, 6)
+    w2_grid = np.linspace(2.0, 25.0, 6)
+    
+    for w1 in w1_grid:
+        for w2 in w2_grid:
+            final_equity = run_simulation_core(df, w1, w2, kelly_fraction)
+            if final_equity > best_equity:
+                best_equity = final_equity
+                best_w1, best_w2 = w1, w2
+                
+    return round(float(best_w1), 2), round(float(best_w2), 2)
+
+# 5. FULL BACKTEST LOG GENERATOR
+def run_institutional_simulation(df, ticker, w1, w2, kelly_fraction=0.15, risk_free_rate=0.045):
     capital = 10000.00
     log = []
     dates = df.index
@@ -75,9 +132,8 @@ def run_institutional_simulation(df, ticker, kelly_fraction=0.15, risk_free_rate
         current_row = df.loc[current_date]
         prev_row = df.loc[prev_date]
         
-        p_y = compute_gqpe_probability(current_row, prev_row)
+        p_y = compute_gqpe_probability(current_row, prev_row, w1, w2)
         
-        # فلتر الأمان للحد من التداول العشوائي
         if 0.46 <= p_y <= 0.54:
             log.append({
                 "Date": current_date.strftime('%Y-%m-%d'),
@@ -129,12 +185,9 @@ def run_institutional_simulation(df, ticker, kelly_fraction=0.15, risk_free_rate
             "Portfolio Equity ($)": round(capital, 2)
         })
         
-    if not log:
-        raise ValueError("Simulation log is empty.")
-        
     return pd.DataFrame(log)
 
-# 5. EXECUTION PIPELINE INTEGRATION
+# 6. EXECUTION PIPELINE INTEGRATION
 try:
     if not user_ticker:
         st.warning("Please enter a valid stock ticker in the sidebar.")
@@ -142,22 +195,27 @@ try:
         
     df_market = get_historical_market_data(user_ticker)
     if df_market.empty:
-        st.error(f"[-] No market data found for symbol: {user_ticker}. Please verify the ticker symbol.")
+        st.error(f"[-] No market data found for symbol: {user_ticker}.")
         st.stop()
         
-    results_df = run_institutional_simulation(df_market, user_ticker, kelly_fraction)
+    if enable_optimizer:
+        opt_w1, opt_w2 = optimize_strategy_weights(df_market, kelly_fraction)
+    else:
+        opt_w1, opt_w2 = 8.0, 12.0
+        
+    results_df = run_institutional_simulation(df_market, user_ticker, opt_w1, opt_w2, kelly_fraction)
     latest_state = results_df.iloc[-1]
     net_roi = ((latest_state['Portfolio Equity ($)'] - 10000.0) / 10000.0) * 100
     
     # STREAMLIT VISUAL DASHBOARD PANEL
     st.markdown(f"<h1 style='text-align: center; color: white;'>🏛️ GQPE Institutional Execution Desk</h1>", unsafe_allow_html=True)
-    st.markdown(f"<p style='text-align: center; color: #9ca3af;'>Black-Scholes Filtered Options Engine — Asset: <b>{user_ticker}</b></p>", unsafe_allow_html=True)
+    st.markdown(f"<p style='text-align: center; color: #9ca3af;'>Optimized Black-Scholes Engine — Asset: <b>{user_ticker}</b></p>", unsafe_allow_html=True)
     st.divider()
     
     kpi1, kpi2, kpi3 = st.columns(3)
     kpi1.metric("Net Portfolio Equity", f"${latest_state['Portfolio Equity ($)']:,}")
-    kpi2.metric("Initial Baseline Capital", "$10,000.00")
-    kpi3.metric("Strategy Alpha ROI", f"{net_roi:+.2f}%", f"Filtered Delta ({user_ticker})")
+    kpi2.metric("Optimized Weights (w1, w2)", f"{opt_w1}, {opt_w2}")
+    kpi3.metric("Strategy Alpha ROI", f"{net_roi:+.2f}%", f"Engineered ({user_ticker})")
     
     st.divider()
     
@@ -171,7 +229,7 @@ try:
     m1, m2, m3 = st.columns(3)
     m1.write(f"**Valuation Model:** Black-Scholes (30-Day Expiry)")
     m2.write(f"**Dynamic Annualized Volatility:** {latest_state['Volatility']}%")
-    m3.write(f"**Execution Risk Profile:** Kelly Fraction ({int(kelly_fraction*100)}%)")
+    m3.write(f"**Optimization Mode:** {'Active Grid Search' if enable_optimizer else 'Manual Static'}")
     
     st.divider()
     
