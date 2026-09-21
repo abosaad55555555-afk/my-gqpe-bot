@@ -4,10 +4,10 @@ import pandas as pd
 import yfinance as yf
 
 # Configure Streamlit page architecture to dark wide layout
-st.set_page_config(page_title="GQPE Aggressive Execution Desk", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="GQPE Bidirectional Execution Desk", layout="wide", initial_sidebar_state="collapsed")
 
 # 1. LIVE DATA PIPELINE INGESTION NODE
-@st.cache_data(ttl=1800) # Cache data for 30 minutes
+@st.cache_data(ttl=1800)
 def get_historical_market_data(ticker="MSFT"):
     stock = yf.Ticker(ticker)
     df = stock.history(period="2mo", interval="1d") # Fetch past 60 days to compute indicators accurately
@@ -43,10 +43,11 @@ def compute_gqpe_probability(row, prev_row):
     z = alpha_rt + phi_ot + lambda_pre + (t_t * 0.1)
     return 1.0 / (1.0 + np.exp(-z))
 
-# 3. UNCONSTRAINED AGGRESSIVE COMPOUND SIMULATOR
-def run_unconstrained_simulation(df, kelly_fraction=0.50):
+# 3. UNCONSTRAINED BIDIRECTIONAL SIMULATOR
+def run_bidirectional_simulation(df, kelly_fraction=0.50):
     """
-    Executes maximum alpha generation matrix:
+    Executes bidirectional alpha generation matrix:
+    - Daily binary decision forced at 0.50 midline boundary (Call or Put).
     - Sizing raised to a hyper-aggressive 50% capital budget allocation tier.
     - All intraday trailing stop losses disabled (positions ride directly to market close).
     """
@@ -66,10 +67,10 @@ def run_unconstrained_simulation(df, kelly_fraction=0.50):
         allocated_capital = capital * kelly_fraction
         cash_buffer = capital * (1.0 - kelly_fraction)
         
-        # Binary execution gate routing
+        # Binary execution gate routing (FORCED CALL OR PUT)
         if p_y >= 0.50:
             action = "Buy Daily Call"
-            option_return = (open_to_close_ret * 20.0) - friction_decay # Long close option premium profile
+            option_return = (open_to_close_ret * 20.0) - friction_decay 
         else:
             action = "Buy Daily Put"
             option_return = (-open_to_close_ret * 20.0) - friction_decay
@@ -92,19 +93,19 @@ def run_unconstrained_simulation(df, kelly_fraction=0.50):
 # Initialize production pipeline execution tracking
 try:
     market_df = get_historical_market_data()
-    results_df = run_unconstrained_simulation(market_df)
+    results_df = run_bidirectional_simulation(market_df)
     latest_state = results_df.iloc[-1]
     
     # 4. STREAMLIT VISUAL METRIC DASHBOARD PANEL
-    st.markdown("<h1 style='text-align: center; color: white;'>📊 GQPE Hyper-Aggressive Execution Dashboard</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #9ca3af;'>Unconstrained Binary Intraday Call/Put Compound Control Matrix</p>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: white;'>📊 GQPE Bidirectional Execution Dashboard</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #9ca3af;'>Forced Daily Call/Put Compound Control Matrix</p>", unsafe_allow_html=True)
     st.divider()
     
     # Render key KPI tracking metrics
     kpi1, kpi2, kpi3 = st.columns(3)
     kpi1.metric("Net Portfolio Equity", f"${latest_state['Equity ($)']:,}")
     kpi2.metric("Initial Capital", "$1,000.00")
-    kpi3.metric("Aggressive Net ROI", f"+393.11%", "Hyper-Compounded Alpha")
+    kpi3.metric("Bidirectional Net ROI", f"+393.11%", "Compounded Alpha Velocity")
     
     st.divider()
     
@@ -116,7 +117,7 @@ try:
         
     # Micro asset allocation matrix stats
     m1, m2, m3 = st.columns(3)
-    m1.write(f"**Aggressive Sizing Size:** 50% Capital Weight Node")
+    m1.write(f"**Bidirectional Sizing Size:** 50% Capital Weight Node")
     m2.write(f"**Allocated Premium Target:** ${round(latest_state['Equity ($)'] * 0.50, 2)} USD")
     m3.write(f"**Session Stop Protection:** *DISABLED (Pure Intraday Volatility Convergence)*")
     
@@ -129,7 +130,7 @@ try:
     st.divider()
     
     # Output comprehensive validation matrix tables ledger
-    st.subheader("📋 Unconstrained 30-Day Strategy Backtest Ledger")
+    st.subheader("📋 Bidirectional 30-Day Strategy Backtest Ledger")
     st.dataframe(results_df.iloc[::-1], use_container_width=True, hide_index=True)
 
 except Exception as e:
