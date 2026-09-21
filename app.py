@@ -12,10 +12,14 @@ def get_historical_market_data(tickers=["MSFT", "NVDA", "AAPL"]):
     combined_data = {}
     for ticker in tickers:
         stock = yf.Ticker(ticker)
-        df = stock.history(period="2mo", interval="1d")
+        df = stock.history(period="3mo", interval="1d") # توسيع الفترة لضمان توفر بيانات كافية
         
         if df is None or df.empty:
             continue
+            
+        # إزالة المنطقة الزمنية من الفهرس لتجنب مشاكل التطابق
+        if df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
             
         # Structural Filters
         df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
@@ -30,7 +34,10 @@ def get_historical_market_data(tickers=["MSFT", "NVDA", "AAPL"]):
         low_cp = np.abs(df['Low'] - df['Close'].shift())
         df['ATR_20'] = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1).rolling(20).mean()
         
-        combined_data[ticker] = df.dropna().tail(30)
+        cleaned_df = df.dropna()
+        if not cleaned_df.empty:
+            combined_data[ticker] = cleaned_df.tail(30)
+            
     return combined_data
 
 # 2. BALANCED INTRADAY PROBABILITY ENGINE (BIDIRECTIONAL ENABLED)
@@ -41,13 +48,12 @@ def compute_gqpe_probability(row, prev_row):
     z = (price_vs_ema * 10.0) + (momentum_factor * 15.0)
     return 1.0 / (1.0 + np.exp(-z))
 
-# 3. ROBUST ROTATIONAL MULTI-STOCK SIMULATOR (UNION-BASED ALIGNMENT)
+# 3. ROBUST ROTATIONAL MULTI-STOCK SIMULATOR
 def run_rotational_simulation(market_data_dict, kelly_fraction=0.50):
     tickers = list(market_data_dict.keys())
     if not tickers:
         raise ValueError("No market data retrieved for any ticker.")
         
-    # جمع كافة التواريخ المتاحة وتوحيدها وترتيبها تصاعدياً لتجنب فراغ السجل
     all_dates = set()
     for t in tickers:
         all_dates.update(market_data_dict[t].index)
@@ -67,7 +73,6 @@ def run_rotational_simulation(market_data_dict, kelly_fraction=0.50):
         best_p_y = -1
         best_row = None
         
-        # البحث عن أفضل سهم متاح في هذا التاريخ المحدد
         for ticker in tickers:
             df = market_data_dict[ticker]
             if current_date in df.index and prev_date in df.index:
