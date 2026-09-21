@@ -12,7 +12,7 @@ def get_historical_market_data(tickers=["MSFT", "NVDA", "AAPL"]):
     combined_data = {}
     for ticker in tickers:
         stock = yf.Ticker(ticker)
-        df = stock.history(period="2mo", interval="1d") # Fetch past 60 days
+        df = stock.history(period="2mo", interval="1d")
         
         # Structural Filters
         df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
@@ -30,26 +30,19 @@ def get_historical_market_data(tickers=["MSFT", "NVDA", "AAPL"]):
         combined_data[ticker] = df.dropna().tail(21)
     return combined_data
 
-# 2. INTRADAY PROBABILITY ENGINE
+# 2. BALANCED INTRADAY PROBABILITY ENGINE (BIDIRECTIONAL ENABLED)
 def compute_gqpe_probability(row, prev_row):
-    alpha_rt = 0.08 if row['Close'] > row['EMA_20'] else -0.06
-    phi_ot = np.tanh(1.2) * 0.12 
-    gap_pct = (row['Open'] - prev_row['Close']) / (prev_row['Close'] + 1e-9)
-    atr_bounds = np.abs(row['Open'] - prev_row['Close']) / (row['ATR_20'] + 1e-9)
+    # ربط الاحتمالية بحركة السعر الحقيقية مقارنة بمتوسط الحركة والزخم لضمان تنوع الإشارات
+    price_vs_ema = (row['Close'] - row['EMA_20']) / (row['EMA_20'] + 1e-9)
+    momentum_factor = (row['Close'] - prev_row['Close']) / (prev_row['Close'] + 1e-9)
     
-    if atr_bounds > 2.5: return 0.5 # Avert outlier gap traps
-    
-    lambda_pre = gap_pct * 3.5 
-    rsi_penalty = 1.0 / (1.0 + np.exp((row['RSI_14'] - 70) / 4.0))
-    t_t = rsi_penalty * np.exp(-np.abs(row['Open'] - row['EMA_20']) / (row['Close'] * 0.05))
-    
-    z = alpha_rt + phi_ot + lambda_pre + (t_t * 0.1)
+    # دمج العوامل لتوليد احتمالية تتوازن فوق وتحت خط الـ 0.50
+    z = (price_vs_ema * 10.0) + (momentum_factor * 15.0)
     return 1.0 / (1.0 + np.exp(-z))
 
 # 3. ROTATIONAL MULTI-STOCK SIMULATOR
 def run_rotational_simulation(market_data_dict, kelly_fraction=0.50):
     tickers = list(market_data_dict.keys())
-    # Align dates across all tickers
     common_dates = market_data_dict[tickers[0]].index
     for t in tickers[1:]:
         common_dates = common_dates.intersection(market_data_dict[t].index)
@@ -66,31 +59,33 @@ def run_rotational_simulation(market_data_dict, kelly_fraction=0.50):
         best_row = None
         best_prev_row = None
         
-        # Scan all 3 stocks to find the highest probability asset for the day
+        # اختيار السهم الذي يحمل أقوى زخم (سواء صعوداً أو هبوطاً)
         for ticker in tickers:
             df = market_data_dict[ticker]
             current_row = df.loc[current_date]
             prev_row = df.loc[prev_date]
             p_y = compute_gqpe_probability(current_row, prev_row)
             
-            if p_y > best_p_y:
+            # نبحث عن الانحراف الأقوى عن خط المنتصف 0.50 (سواء لأعلى أو لأسفل)
+            if abs(p_y - 0.5) > abs(best_p_y - 0.5):
                 best_p_y = p_y
                 best_ticker = ticker
                 best_row = current_row
                 best_prev_row = prev_row
                 
-        # Execute trade on the top-ranked stock of the day
         open_to_close_ret = (best_row['Close'] - best_row['Open']) / best_row['Open']
         friction_decay = 0.02
         
         allocated_capital = capital * kelly_fraction
         cash_buffer = capital * (1.0 - kelly_fraction)
         
+        # تفصيل مسار الاتجاه: إذا كانت الاحتمالية أكبر أو تساوي 0.50 نفعل الكول، وإلا نفعل البوت
         if best_p_y >= 0.50:
             action = f"Buy Call ({best_ticker})"
             option_return = (open_to_close_ret * 20.0) - friction_decay 
         else:
             action = f"Buy Put ({best_ticker})"
+            # في صفقة البوت، العكس هو الصحيح (الهبوط يحقق ربحاً للعقد)
             option_return = (-open_to_close_ret * 20.0) - friction_decay
             
         allocated_capital *= (1.0 + option_return)
@@ -119,7 +114,6 @@ try:
     st.markdown("<p style='text-align: center; color: #9ca3af;'>Dynamic Multi-Asset Selection & Compound Control Matrix</p>", unsafe_allow_html=True)
     st.divider()
     
-    # Render key KPI tracking metrics
     kpi1, kpi2, kpi3 = st.columns(3)
     kpi1.metric("Net Portfolio Equity", f"${latest_state['Equity ($)']:,}")
     kpi2.metric("Initial Capital", "$1,000.00")
@@ -127,24 +121,23 @@ try:
     
     st.divider()
     
-    # Render Active Live Trigger Ticket
-    st.success(f"🚀 TOP ROTATIONAL PICK: **{latest_state['Selected Asset']}** | Action: **{latest_state['Action']}** (Prob: {latest_state['Probability']})")
+    if latest_state['Probability'] >= 0.50:
+        st.success(f"🚀 TOP ROTATIONAL PICK: **{latest_state['Selected Asset']}** | Action: **{latest_state['Action']}** (Prob: {latest_state['Probability']})")
+    else:
+        st.error(f"🔴 TOP ROTATIONAL PICK: **{latest_state['Selected Asset']}** | Action: **{latest_state['Action']}** (Prob: {latest_state['Probability']})")
         
-    # Micro asset allocation matrix stats
     m1, m2, m3 = st.columns(3)
     m1.write(f"**Active Asset Pool:** MSFT, NVDA, AAPL")
     m2.write(f"**Allocated Premium Target:** ${round(latest_state['Equity ($)'] * 0.50, 2)} USD")
-    m3.write(f"**Session Strategy:** Dynamic Daily Asset Rotation")
+    m3.write(f"**Session Strategy:** Bidirectional Daily Asset Rotation")
     
     st.divider()
     
-    # Render Parabolic Line Curve
     st.subheader("📈 Multi-Asset Rotational Capital Growth Curve")
     st.line_chart(data=results_df, x="Date", y="Equity ($)", use_container_width=True)
     
     st.divider()
     
-    # Output comprehensive validation matrix tables ledger
     st.subheader("📋 3-Stock Rotation Strategy Backtest Ledger")
     st.dataframe(results_df.iloc[::-1], use_container_width=True, hide_index=True)
 
