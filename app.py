@@ -14,6 +14,9 @@ def get_historical_market_data(tickers=["MSFT", "NVDA", "AAPL"]):
         stock = yf.Ticker(ticker)
         df = stock.history(period="2mo", interval="1d")
         
+        if df is None or df.empty:
+            continue
+            
         # Structural Filters
         df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
         delta = df['Close'].diff()
@@ -32,21 +35,25 @@ def get_historical_market_data(tickers=["MSFT", "NVDA", "AAPL"]):
 
 # 2. BALANCED INTRADAY PROBABILITY ENGINE (BIDIRECTIONAL ENABLED)
 def compute_gqpe_probability(row, prev_row):
-    # ربط الاحتمالية بحركة السعر الحقيقية مقارنة بمتوسط الحركة والزخم لضمان تنوع الإشارات
     price_vs_ema = (row['Close'] - row['EMA_20']) / (row['EMA_20'] + 1e-9)
     momentum_factor = (row['Close'] - prev_row['Close']) / (prev_row['Close'] + 1e-9)
     
-    # دمج العوامل لتوليد احتمالية تتوازن فوق وتحت خط الـ 0.50
     z = (price_vs_ema * 10.0) + (momentum_factor * 15.0)
     return 1.0 / (1.0 + np.exp(-z))
 
-# 3. ROTATIONAL MULTI-STOCK SIMULATOR
+# 3. ROTATIONAL MULTI-STOCK SIMULATOR (WITH SAFETY GUARDS)
 def run_rotational_simulation(market_data_dict, kelly_fraction=0.50):
     tickers = list(market_data_dict.keys())
+    if not tickers:
+        raise ValueError("No market data retrieved for any ticker.")
+        
     common_dates = market_data_dict[tickers[0]].index
     for t in tickers[1:]:
         common_dates = common_dates.intersection(market_data_dict[t].index)
     
+    if len(common_dates) < 2:
+        raise ValueError("Insufficient overlapping dates found across tickers.")
+
     capital = 1000.00
     log = []
     
@@ -59,33 +66,34 @@ def run_rotational_simulation(market_data_dict, kelly_fraction=0.50):
         best_row = None
         best_prev_row = None
         
-        # اختيار السهم الذي يحمل أقوى زخم (سواء صعوداً أو هبوطاً)
         for ticker in tickers:
             df = market_data_dict[ticker]
+            if current_date not in df.index or prev_date not in df.index:
+                continue
             current_row = df.loc[current_date]
             prev_row = df.loc[prev_date]
             p_y = compute_gqpe_probability(current_row, prev_row)
             
-            # نبحث عن الانحراف الأقوى عن خط المنتصف 0.50 (سواء لأعلى أو لأسفل)
             if abs(p_y - 0.5) > abs(best_p_y - 0.5):
                 best_p_y = p_y
                 best_ticker = ticker
                 best_row = current_row
                 best_prev_row = prev_row
                 
-        open_to_close_ret = (best_row['Close'] - best_row['Open']) / best_row['Open']
+        if best_ticker is None or best_row is None:
+            continue
+                
+        open_to_close_ret = (best_row['Close'] - best_row['Open']) / (best_row['Open'] + 1e-9)
         friction_decay = 0.02
         
         allocated_capital = capital * kelly_fraction
         cash_buffer = capital * (1.0 - kelly_fraction)
         
-        # تفصيل مسار الاتجاه: إذا كانت الاحتمالية أكبر أو تساوي 0.50 نفعل الكول، وإلا نفعل البوت
         if best_p_y >= 0.50:
             action = f"Buy Call ({best_ticker})"
             option_return = (open_to_close_ret * 20.0) - friction_decay 
         else:
             action = f"Buy Put ({best_ticker})"
-            # في صفقة البوت، العكس هو الصحيح (الهبوط يحقق ربحاً للعقد)
             option_return = (-open_to_close_ret * 20.0) - friction_decay
             
         allocated_capital *= (1.0 + option_return)
@@ -99,6 +107,9 @@ def run_rotational_simulation(market_data_dict, kelly_fraction=0.50):
             "Trade Return (%)": round(option_return * 100, 2),
             "Equity ($)": round(capital, 2)
         })
+        
+    if not log:
+        raise ValueError("Simulation log is empty. Check data pipelines.")
         
     return pd.DataFrame(log)
 
