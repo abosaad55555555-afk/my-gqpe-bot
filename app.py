@@ -2,23 +2,48 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import yfinance as yf
+from scipy.stats import norm
 
 # Configure Streamlit page architecture to dark wide layout
-st.set_page_config(page_title="GQPE MSFT Single-Asset Execution Desk", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="GQPE Institutional Execution Desk - MSFT", layout="wide", initial_sidebar_state="collapsed")
 
-# 1. MSFT LIVE DATA PIPELINE INGESTION NODE
+# 1. QUANTITATIVE BLACK-SCHOLES PRICING ENGINE
+def black_scholes_price(S, K, T, r, sigma, option_type="call"):
+    """
+    Computes theoretical option price using the Black-Scholes-Merton model.
+    S: Spot price
+    K: Strike price
+    T: Time to maturity in years (e.g., 1 day intraday expiry = 1 / 252)
+    r: Risk-free interest rate
+    sigma: Volatility
+    option_type: 'call' or 'put'
+    """
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
+        return max(0.0, S - K) if option_type == "call" else max(0.0, K - S)
+        
+    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    
+    if option_type == "call":
+        price = S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+    else:
+        price = K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+        
+    return price
+
+# 2. ROBUST LIVE DATA INGESTION & FEATURE ENGINEERING
 @st.cache_data(ttl=1800)
-def get_historical_market_data(ticker="MSFT"):
+def get_institutional_market_data(ticker="MSFT"):
     stock = yf.Ticker(ticker)
-    df = stock.history(period="3mo", interval="1d")
+    df = stock.history(period="6mo", interval="1d")
     
     if df is None or df.empty:
         return pd.DataFrame()
         
-    # تنظيف وتحويل الفهرس إلى تواريخ صافية بدون أوقات أو مناطق زمنية
+    # Clean and normalize datetime index
     df.index = pd.to_datetime(df.index).normalize()
     
-    # Structural Filters
+    # Statistical & Technical Indicators
     df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
@@ -26,28 +51,28 @@ def get_historical_market_data(ticker="MSFT"):
     rs = gain / (loss + 1e-9)
     df['RSI_14'] = 100 - (100 / (1 + rs))
     
-    high_low = df['High'] - df['Low']
-    high_cp = np.abs(df['High'] - df['Close'].shift())
-    low_cp = np.abs(df['Low'] - df['Close'].shift())
-    df['ATR_20'] = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1).rolling(20).mean()
+    # Annualized Rolling Volatility (20-day window)
+    df['Daily_Return'] = df['Close'].pct_change()
+    df['Volatility_20'] = df['Daily_Return'].rolling(window=20).std() * np.sqrt(252)
     
     cleaned_df = df.dropna()
-    return cleaned_df.tail(40)
+    return cleaned_df.tail(60)
 
-# 2. BALANCED INTRADAY PROBABILITY ENGINE (BIDIRECTIONAL ENABLED)
+# 3. STATISTICAL PROBABILITY ENGINE (PROPRIETARY Z-SCORE TRANSFORM)
 def compute_gqpe_probability(row, prev_row):
     price_vs_ema = (row['Close'] - row['EMA_20']) / (row['EMA_20'] + 1e-9)
     momentum_factor = (row['Close'] - prev_row['Close']) / (prev_row['Close'] + 1e-9)
     
-    z = (price_vs_ema * 10.0) + (momentum_factor * 15.0)
+    # Calibrated weights for intraday drift
+    z = (price_vs_ema * 8.0) + (momentum_factor * 12.0)
     return 1.0 / (1.0 + np.exp(-z))
 
-# 3. MSFT SINGLE-ASSET SIMULATOR
-def run_msft_simulation(df, kelly_fraction=0.50):
+# 4. INSTITUTIONAL BACKTESTING SIMULATOR (WITH BLACK-SCHOLES)
+def run_institutional_simulation(df, kelly_fraction=0.40, risk_free_rate=0.045):
     if df is None or len(df) < 2:
-        raise ValueError("Insufficient historical data retrieved for MSFT.")
+        raise ValueError("Insufficient historical data retrieved for execution.")
 
-    capital = 1000.00
+    capital = 10000.00  # Scaled up to institutional testing baseline
     log = []
     dates = df.index
     
@@ -60,29 +85,49 @@ def run_msft_simulation(df, kelly_fraction=0.50):
         
         p_y = compute_gqpe_probability(current_row, prev_row)
         
-        open_to_close_ret = (current_row['Close'] - current_row['Open']) / (current_row['Open'] + 1e-9)
-        friction_decay = 0.02
+        # Market variables for Black-Scholes
+        open_price = current_row['Open']
+        close_price = current_row['Close']
+        volatility = max(current_row['Volatility_20'], 0.10) # Floor volatility at 10%
+        
+        # Setting At-The-Money (ATM) strike price at market open
+        strike_price = open_price 
+        time_to_expiry = 1.0 / 252.0  # 1-day intraday expiration equivalent
+        
+        if p_y >= 0.50:
+            action = "Buy Call (MSFT)"
+            # Theoretical option price at Open vs Close using dynamic spot movement
+            opt_price_open = black_scholes_price(open_price, strike_price, time_to_expiry, risk_free_rate, volatility, "call")
+            opt_price_close = black_scholes_price(close_price, strike_price, 1e-5, risk_free_rate, volatility, "call")
+        else:
+            action = "Buy Put (MSFT)"
+            opt_price_open = black_scholes_price(open_price, strike_price, time_to_expiry, risk_free_rate, volatility, "put")
+            opt_price_close = black_scholes_price(close_price, strike_price, 1e-5, risk_free_rate, volatility, "put")
+            
+        if opt_price_open <= 0:
+            continue
+            
+        # Realistic option percentage return based on Black-Scholes delta/gamma trajectory
+        option_return = (opt_price_close - opt_price_open) / opt_price_open
+        
+        # Institutional friction: Estimated 1.5% total cost for spread crossing and commissions
+        friction_cost = 0.015 
+        net_option_return = option_return - friction_cost
         
         allocated_capital = capital * kelly_fraction
         cash_buffer = capital * (1.0 - kelly_fraction)
         
-        if p_y >= 0.50:
-            action = "Buy Call (MSFT)"
-            option_return = (open_to_close_ret * 20.0) - friction_decay 
-        else:
-            action = "Buy Put (MSFT)"
-            option_return = (-open_to_close_ret * 20.0) - friction_decay
-            
-        allocated_capital *= (1.0 + option_return)
+        allocated_capital *= (1.0 + net_option_return)
         capital = cash_buffer + allocated_capital
         
         log.append({
             "Date": current_date.strftime('%Y-%m-%d'),
-            "Selected Asset": "MSFT",
+            "Asset": "MSFT",
             "Probability": round(p_y, 4),
             "Action": action,
-            "Trade Return (%)": round(option_return * 100, 2),
-            "Equity ($)": round(capital, 2)
+            "Volatility": round(volatility * 100, 2),
+            "Trade Return (%)": round(net_option_return * 100, 2),
+            "Portfolio Equity ($)": round(capital, 2)
         })
         
     if not log:
@@ -90,42 +135,43 @@ def run_msft_simulation(df, kelly_fraction=0.50):
         
     return pd.DataFrame(log)
 
-# Initialize pipeline execution tracking
+# Execution Pipeline Integration
 try:
-    df_market = get_historical_market_data("MSFT")
-    results_df = run_msft_simulation(df_market)
+    df_market = get_institutional_market_data("MSFT")
+    results_df = run_institutional_simulation(df_market)
     latest_state = results_df.iloc[-1]
+    net_roi = ((latest_state['Portfolio Equity ($)'] - 10000.0) / 10000.0) * 100
     
-    # 4. STREAMLIT VISUAL METRIC DASHBOARD PANEL
-    st.markdown("<h1 style='text-align: center; color: white;'>📊 GQPE MSFT Single-Asset Execution Desk</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #9ca3af;'>Dynamic Intraday Execution & Compound Control Matrix for Microsoft</p>", unsafe_allow_html=True)
+    # 5. STREAMLIT VISUAL DASHBOARD PANEL
+    st.markdown("<h1 style='text-align: center; color: white;'>🏛️ GQPE Institutional Execution Desk</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #9ca3af;'>Black-Scholes Valued Intraday Derivatives Engine — Microsoft (MSFT)</p>", unsafe_allow_html=True)
     st.divider()
     
     kpi1, kpi2, kpi3 = st.columns(3)
-    kpi1.metric("Net Portfolio Equity", f"${latest_state['Equity ($)']:,}")
-    kpi2.metric("Initial Capital", "$1,000.00")
-    kpi3.metric("Strategy Net ROI", f"+{(latest_state['Equity ($)'] - 1000) / 10:.2f}%", "MSFT Alpha Velocity")
+    kpi1.metric("Net Portfolio Equity", f"${latest_state['Portfolio Equity ($)']:,}")
+    kpi2.metric("Initial Baseline Capital", "$10,000.00")
+    kpi3.metric("Strategy Alpha ROI", f"{net_roi:+.2f}%", "Black-Scholes Delta Adjusted")
     
     st.divider()
     
     if latest_state['Probability'] >= 0.50:
-        st.success(f"🚀 LATEST SIGNAL: **{latest_state['Selected Asset']}** | Action: **{latest_state['Action']}** (Prob: {latest_state['Probability']})")
+        st.success(f"🚀 LIVE SIGNAL: **{latest_state['Asset']}** | Execution: **{latest_state['Action']}** | Model Probability: **{latest_state['Probability']}**")
     else:
-        st.error(f"🔴 LATEST SIGNAL: **{latest_state['Selected Asset']}** | Action: **{latest_state['Action']}** (Prob: {latest_state['Probability']})")
+        st.error(f"🔴 LIVE SIGNAL: **{latest_state['Asset']}** | Execution: **{latest_state['Action']}** | Model Probability: **{latest_state['Probability']}**")
         
     m1, m2, m3 = st.columns(3)
-    m1.write(f"**Active Asset:** Microsoft Corporation (MSFT)")
-    m2.write(f"**Allocated Premium Target:** ${round(latest_state['Equity ($)'] * 0.50, 2)} USD")
-    m3.write(f"**Session Strategy:** Bidirectional Daily Directional")
+    m1.write(f"**Valuation Model:** Black-Scholes European Option Pricing")
+    m2.write(f"**Dynamic Annualized Volatility:** {latest_state['Volatility']}%")
+    m3.write(f"**Execution Risk Profile:** Kelly Criterion Fraction (40%)")
     
     st.divider()
     
-    st.subheader("📈 MSFT Strategy Capital Growth Curve")
-    st.line_chart(data=results_df, x="Date", y="Equity ($)", use_container_width=True)
+    st.subheader("📈 Institutional Equity Growth Curve")
+    st.line_chart(data=results_df, x="Date", y="Portfolio Equity ($)", use_container_width=True)
     
     st.divider()
     
-    st.subheader("📋 MSFT Execution Backtest Ledger")
+    st.subheader("📋 Execution & Pricing Audit Ledger")
     st.dataframe(results_df.iloc[::-1], use_container_width=True, hide_index=True)
 
 except Exception as e:
