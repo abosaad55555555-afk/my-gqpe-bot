@@ -28,7 +28,7 @@ def black_scholes_price(S, K, T, r, sigma, option_type="call"):
         
     return price
 
-# 2. ROBUST LIVE DATA INGESTION & FEATURE ENGINEERING (Last 30 Days & Stable Close)
+# 2. ROBUST LIVE DATA INGESTION & FEATURE ENGINEERING (Fixed Timezone Comparison)
 @st.cache_data(ttl=1800)
 def get_historical_market_data(ticker):
     stock = yf.Ticker(ticker)
@@ -37,9 +37,10 @@ def get_historical_market_data(ticker):
     if df is None or df.empty:
         return pd.DataFrame()
         
-    df.index = pd.to_datetime(df.index).normalize()
+    # إزالة معلومات التوقيت الزمني من المؤشر لضمان توافق المقارنة وتجنب أخطاء Timezone
+    df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
     
-    # استبعاد شمعة اليوم الحالي الجارية لتثبيت الإشارة وعدم تذبذبها
+    # استبعاد شمعة اليوم الحالي الجارية لتثبيت الإشارة
     today = pd.Timestamp.today().normalize()
     if not df.empty and df.index[-1] >= today:
         df = df.iloc[:-1]
@@ -55,7 +56,7 @@ def get_historical_market_data(ticker):
     df['Volatility_20'] = df['Daily_Return'].rolling(window=20).std() * np.sqrt(252)
     
     cleaned_df = df.dropna()
-    return cleaned_df.tail(30)  # اقتصر العرض والتحليل على آخر 30 يوم تداول فقط
+    return cleaned_df.tail(30)  # آخر 30 يوم تداول
 
 # 3. PROBABILITY ENGINE WITH CONFIGURABLE WEIGHTS
 def compute_gqpe_probability(row, prev_row, w1, w2):
