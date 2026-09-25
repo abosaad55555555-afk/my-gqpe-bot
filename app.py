@@ -5,7 +5,7 @@ import yfinance as yf
 from scipy.stats import norm
 
 # Configure Streamlit page architecture to dark wide layout
-st.set_page_config(page_title="GQPE Institutional Execution Desk", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="GQPE Institutional Execution Desk - 30D", layout="wide", initial_sidebar_state="expanded")
 
 # Sidebar Control Panel
 st.sidebar.markdown("## ⚙️ Execution Parameters")
@@ -28,7 +28,7 @@ def black_scholes_price(S, K, T, r, sigma, option_type="call"):
         
     return price
 
-# 2. ROBUST LIVE DATA INGESTION & FEATURE ENGINEERING
+# 2. ROBUST LIVE DATA INGESTION & FEATURE ENGINEERING (Last 30 Days & Stable Close)
 @st.cache_data(ttl=1800)
 def get_historical_market_data(ticker):
     stock = yf.Ticker(ticker)
@@ -38,6 +38,11 @@ def get_historical_market_data(ticker):
         return pd.DataFrame()
         
     df.index = pd.to_datetime(df.index).normalize()
+    
+    # استبعاد شمعة اليوم الحالي الجارية لتثبيت الإشارة وعدم تذبذبها
+    today = pd.Timestamp.today().normalize()
+    if not df.empty and df.index[-1] >= today:
+        df = df.iloc[:-1]
     
     df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
     delta = df['Close'].diff()
@@ -50,7 +55,7 @@ def get_historical_market_data(ticker):
     df['Volatility_20'] = df['Daily_Return'].rolling(window=20).std() * np.sqrt(252)
     
     cleaned_df = df.dropna()
-    return cleaned_df.tail(60)
+    return cleaned_df.tail(30)  # اقتصر العرض والتحليل على آخر 30 يوم تداول فقط
 
 # 3. PROBABILITY ENGINE WITH CONFIGURABLE WEIGHTS
 def compute_gqpe_probability(row, prev_row, w1, w2):
@@ -209,13 +214,13 @@ try:
     
     # STREAMLIT VISUAL DASHBOARD PANEL
     st.markdown(f"<h1 style='text-align: center; color: white;'>🏛️ GQPE Institutional Execution Desk</h1>", unsafe_allow_html=True)
-    st.markdown(f"<p style='text-align: center; color: #9ca3af;'>Optimized Black-Scholes Engine — Asset: <b>{user_ticker}</b></p>", unsafe_allow_html=True)
+    st.markdown(f"<p style='text-align: center; color: #9ca3af;'>30-Day Optimized Black-Scholes Engine — Asset: <b>{user_ticker}</b></p>", unsafe_allow_html=True)
     st.divider()
     
     kpi1, kpi2, kpi3 = st.columns(3)
-    kpi1.metric("Net Portfolio Equity", f"${latest_state['Portfolio Equity ($)']:,}")
+    kpi1.metric("Net Portfolio Equity (30D)", f"${latest_state['Portfolio Equity ($)']:,}")
     kpi2.metric("Optimized Weights (w1, w2)", f"{opt_w1}, {opt_w2}")
-    kpi3.metric("Strategy Alpha ROI", f"{net_roi:+.2f}%", f"Engineered ({user_ticker})")
+    kpi3.metric("30-Day Strategy Alpha ROI", f"{net_roi:+.2f}%", f"Engineered ({user_ticker})")
     
     st.divider()
     
@@ -229,16 +234,16 @@ try:
     m1, m2, m3 = st.columns(3)
     m1.write(f"**Valuation Model:** Black-Scholes (30-Day Expiry)")
     m2.write(f"**Dynamic Annualized Volatility:** {latest_state['Volatility']}%")
-    m3.write(f"**Optimization Mode:** {'Active Grid Search' if enable_optimizer else 'Manual Static'}")
+    m3.write(f"**Execution Window:** Last 30 Trading Days")
     
     st.divider()
     
-    st.subheader(f"📈 Institutional Equity Growth Curve ({user_ticker})")
+    st.subheader(f"📈 30-Day Equity Growth Curve ({user_ticker})")
     st.line_chart(data=results_df, x="Date", y="Portfolio Equity ($)", use_container_width=True)
     
     st.divider()
     
-    st.subheader(f"📋 Execution & Pricing Audit Ledger ({user_ticker})")
+    st.subheader(f"📋 30-Day Execution & Pricing Audit Ledger ({user_ticker})")
     st.dataframe(results_df.iloc[::-1], use_container_width=True, hide_index=True)
 
 except Exception as e:
